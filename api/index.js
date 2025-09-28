@@ -25,23 +25,33 @@ db.serialize(() => {
 });
 
 // Initialize Telegram Bot
-const token = process.env.TELEGRAM_BOT_TOKEN;
-if (!token) {
-  console.error('TELEGRAM_BOT_TOKEN environment variable is required');
-  process.exit(1);
-}
+let bot;
 
-const bot = new TelegramBot(token, { polling: false });
+function getBot() {
+  if (!bot) {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) {
+      throw new Error('TELEGRAM_BOT_TOKEN environment variable is required');
+    }
+    bot = new TelegramBot(token, { polling: false });
+  }
+  return bot;
+}
 
 // Webhook endpoint for Vercel
 app.post('/webhook', (req, res) => {
-  const update = req.body;
-  
-  if (update.message) {
-    handleMessage(update.message);
+  try {
+    const update = req.body;
+    
+    if (update.message) {
+      handleMessage(update.message);
+    }
+    
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Webhook error:', error);
+    res.status(500).send('Internal server error');
   }
-  
-  res.status(200).send('OK');
 });
 
 // Health check endpoint
@@ -72,7 +82,7 @@ function handleMessage(message) {
       handleTradesCommand(chatId);
       break;
     default:
-      bot.sendMessage(chatId, 'Unknown command. Available commands: /buy, /sell, /profit, /trades');
+      getBot().sendMessage(chatId, 'Unknown command. Available commands: /buy, /sell, /profit, /trades');
   }
 }
 
@@ -81,7 +91,7 @@ function handleBuyCommand(chatId, text) {
   const parts = text.split(' ');
   
   if (parts.length !== 3) {
-    bot.sendMessage(chatId, 'Usage: /buy {ticker} {price}\nExample: /buy AAPL 150.50');
+    getBot().sendMessage(chatId, 'Usage: /buy {ticker} {price}\nExample: /buy AAPL 150.50');
     return;
   }
   
@@ -89,17 +99,17 @@ function handleBuyCommand(chatId, text) {
   const price = parseFloat(parts[2]);
   
   if (isNaN(price) || price <= 0) {
-    bot.sendMessage(chatId, 'Invalid price. Please enter a valid number.');
+    getBot().sendMessage(chatId, 'Invalid price. Please enter a valid number.');
     return;
   }
   
   const stmt = db.prepare('INSERT INTO trades (ticker, buy_price) VALUES (?, ?)');
   stmt.run([ticker, price], function(err) {
     if (err) {
-      bot.sendMessage(chatId, 'Error adding trade to database.');
+      getBot().sendMessage(chatId, 'Error adding trade to database.');
       console.error(err);
     } else {
-      bot.sendMessage(chatId, `✅ Bought ${ticker} at $${price.toFixed(2)}`);
+      getBot().sendMessage(chatId, `✅ Bought ${ticker} at $${price.toFixed(2)}`);
     }
   });
   stmt.finalize();
@@ -110,7 +120,7 @@ function handleSellCommand(chatId, text) {
   const parts = text.split(' ');
   
   if (parts.length !== 3) {
-    bot.sendMessage(chatId, 'Usage: /sell {ticker} {price}\nExample: /sell AAPL 155.75');
+    getBot().sendMessage(chatId, 'Usage: /sell {ticker} {price}\nExample: /sell AAPL 155.75');
     return;
   }
   
@@ -118,20 +128,20 @@ function handleSellCommand(chatId, text) {
   const sellPrice = parseFloat(parts[2]);
   
   if (isNaN(sellPrice) || sellPrice <= 0) {
-    bot.sendMessage(chatId, 'Invalid price. Please enter a valid number.');
+    getBot().sendMessage(chatId, 'Invalid price. Please enter a valid number.');
     return;
   }
   
   // Find open trades for this ticker
   db.get('SELECT * FROM trades WHERE ticker = ? AND status = "open" ORDER BY buy_date ASC LIMIT 1', [ticker], (err, row) => {
     if (err) {
-      bot.sendMessage(chatId, 'Error accessing database.');
+      getBot().sendMessage(chatId, 'Error accessing database.');
       console.error(err);
       return;
     }
     
     if (!row) {
-      bot.sendMessage(chatId, `No open trades found for ${ticker}.`);
+      getBot().sendMessage(chatId, `No open trades found for ${ticker}.`);
       return;
     }
     
@@ -142,11 +152,11 @@ function handleSellCommand(chatId, text) {
     const stmt = db.prepare('UPDATE trades SET sell_price = ?, sell_date = CURRENT_TIMESTAMP, status = "closed" WHERE id = ?');
     stmt.run([sellPrice, row.id], function(err) {
       if (err) {
-        bot.sendMessage(chatId, 'Error updating trade in database.');
+        getBot().sendMessage(chatId, 'Error updating trade in database.');
         console.error(err);
       } else {
         const profitEmoji = profit >= 0 ? '📈' : '📉';
-        bot.sendMessage(chatId, 
+        getBot().sendMessage(chatId, 
           `${profitEmoji} Sold ${ticker} at $${sellPrice.toFixed(2)}\n` +
           `Bought at: $${row.buy_price.toFixed(2)}\n` +
           `Profit: $${profit.toFixed(2)} (${profitPercent}%)`
@@ -161,13 +171,13 @@ function handleSellCommand(chatId, text) {
 function handleProfitCommand(chatId) {
   db.all('SELECT ticker, buy_price, sell_price, (sell_price - buy_price) as profit FROM trades WHERE status = "closed" ORDER BY sell_date DESC', (err, rows) => {
     if (err) {
-      bot.sendMessage(chatId, 'Error accessing database.');
+      getBot().sendMessage(chatId, 'Error accessing database.');
       console.error(err);
       return;
     }
     
     if (rows.length === 0) {
-      bot.sendMessage(chatId, 'No completed trades found.');
+      getBot().sendMessage(chatId, 'No completed trades found.');
       return;
     }
     
@@ -189,7 +199,7 @@ function handleProfitCommand(chatId) {
     const totalEmoji = totalProfit >= 0 ? '🎉' : '😞';
     message += `${totalEmoji} **Total Profit: $${totalProfit.toFixed(2)}**`;
     
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    getBot().sendMessage(chatId, message, { parse_mode: 'Markdown' });
   });
 }
 
@@ -197,13 +207,13 @@ function handleProfitCommand(chatId) {
 function handleTradesCommand(chatId) {
   db.all('SELECT ticker, buy_price, buy_date FROM trades WHERE status = "open" ORDER BY buy_date DESC', (err, rows) => {
     if (err) {
-      bot.sendMessage(chatId, 'Error accessing database.');
+      getBot().sendMessage(chatId, 'Error accessing database.');
       console.error(err);
       return;
     }
     
     if (rows.length === 0) {
-      bot.sendMessage(chatId, 'No open trades found.');
+      getBot().sendMessage(chatId, 'No open trades found.');
       return;
     }
     
@@ -216,7 +226,7 @@ function handleTradesCommand(chatId) {
       message += `Date: ${buyDate}\n\n`;
     });
     
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    getBot().sendMessage(chatId, message, { parse_mode: 'Markdown' });
   });
 }
 
@@ -225,11 +235,16 @@ if (process.env.NODE_ENV === 'production') {
   const webhookUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}/webhook` : process.env.WEBHOOK_URL;
   
   if (webhookUrl) {
-    bot.setWebHook(webhookUrl).then(() => {
-      console.log('Webhook set successfully');
-    }).catch(err => {
-      console.error('Error setting webhook:', err);
-    });
+    try {
+      const botInstance = getBot();
+      botInstance.setWebHook(webhookUrl).then(() => {
+        console.log('Webhook set successfully');
+      }).catch(err => {
+        console.error('Error setting webhook:', err);
+      });
+    } catch (error) {
+      console.error('Error initializing bot for webhook:', error);
+    }
   }
 }
 
