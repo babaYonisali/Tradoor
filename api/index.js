@@ -85,6 +85,9 @@ class TelegramBotHandler {
       case '/trades':
         await this.handleTradesCommand(msg);
         break;
+      case '/cleanup':
+        await this.handleCleanupCommand(msg);
+        break;
       default:
         await this.handleUnknownCommand(msg);
     }
@@ -112,6 +115,7 @@ Available commands:
 • /sell {ticker} {price} [dollar_amount] - Record a sell trade
 • /profit - View profit summary
 • /trades - View open trades
+• /cleanup - Remove corrupted trade data
 
 Examples:
 /buy AAPL 150.50
@@ -189,43 +193,58 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
           average_buy_price: trade.average_buy_price
         });
         
-        // Validate existing trade data
-        if (isNaN(trade.total_shares) || isNaN(trade.total_invested) || 
-            trade.total_shares < 0 || trade.total_invested < 0) {
-          throw new Error('Invalid existing trade data: corrupted values detected');
+        // Check if existing trade data is corrupted (undefined values)
+        if (trade.total_shares === undefined || trade.total_invested === undefined || 
+            trade.average_buy_price === undefined) {
+          console.log('Corrupted trade data detected, treating as new trade');
+          // Treat this as a new trade by overwriting the corrupted data
+          trade.average_buy_price = price;
+          trade.total_shares = newShares;
+          trade.total_invested = quantity;
+          trade.total_sold_value = 0;
+          trade.total_shares_sold = 0;
+          trade.first_buy_date = new Date();
+          trade.last_buy_date = new Date();
+          trade.last_sell_date = null;
+        } else {
+          // Validate existing trade data
+          if (isNaN(trade.total_shares) || isNaN(trade.total_invested) || 
+              trade.total_shares < 0 || trade.total_invested < 0) {
+            throw new Error('Invalid existing trade data: corrupted values detected');
+          }
+          
+          // Update existing trade - calculate new average price
+          const totalNewShares = trade.total_shares + newShares;
+          const totalNewInvested = trade.total_invested + quantity;
+          
+          // Debug logging for calculations
+          console.log('Calculation values:', { 
+            totalNewShares, 
+            totalNewInvested, 
+            newShares, 
+            quantity 
+          });
+          
+          // Ensure we don't have division by zero or invalid values
+          if (totalNewShares <= 0 || isNaN(totalNewShares) || isNaN(totalNewInvested)) {
+            throw new Error('Invalid calculation: total shares or invested amount is invalid');
+          }
+          
+          const newAveragePrice = totalNewInvested / totalNewShares;
+          
+          // Debug logging for final calculation
+          console.log('Final calculation:', { newAveragePrice });
+          
+          // Validate the calculated values before saving
+          if (isNaN(newAveragePrice) || newAveragePrice <= 0) {
+            throw new Error('Invalid calculation: average price is invalid');
+          }
+          
+          trade.average_buy_price = newAveragePrice;
+          trade.total_shares = totalNewShares;
+          trade.total_invested = totalNewInvested;
+          trade.last_buy_date = new Date();
         }
-        
-        // Update existing trade - calculate new average price
-        const totalNewShares = trade.total_shares + newShares;
-        const totalNewInvested = trade.total_invested + quantity;
-        
-        // Debug logging for calculations
-        console.log('Calculation values:', { 
-          totalNewShares, 
-          totalNewInvested, 
-          newShares, 
-          quantity 
-        });
-        
-        // Ensure we don't have division by zero or invalid values
-        if (totalNewShares <= 0 || isNaN(totalNewShares) || isNaN(totalNewInvested)) {
-          throw new Error('Invalid calculation: total shares or invested amount is invalid');
-        }
-        
-        const newAveragePrice = totalNewInvested / totalNewShares;
-        
-        // Debug logging for final calculation
-        console.log('Final calculation:', { newAveragePrice });
-        
-        // Validate the calculated values before saving
-        if (isNaN(newAveragePrice) || newAveragePrice <= 0) {
-          throw new Error('Invalid calculation: average price is invalid');
-        }
-        
-        trade.average_buy_price = newAveragePrice;
-        trade.total_shares = totalNewShares;
-        trade.total_invested = totalNewInvested;
-        trade.last_buy_date = new Date();
       }
       
       await trade.save();
@@ -419,9 +438,55 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
     }
   }
 
+  async handleCleanupCommand(msg) {
+    const chatId = msg.chat.id;
+    
+    try {
+      // Find all trades with undefined or invalid values
+      const corruptedTrades = await Trade.find({
+        $or: [
+          { total_shares: { $exists: false } },
+          { total_invested: { $exists: false } },
+          { average_buy_price: { $exists: false } },
+          { total_shares: null },
+          { total_invested: null },
+          { average_buy_price: null }
+        ]
+      });
+      
+      if (corruptedTrades.length === 0) {
+        await this.bot.sendMessage(chatId, '✅ No corrupted trades found. Database is clean!');
+        return;
+      }
+      
+      // Delete corrupted trades
+      const result = await Trade.deleteMany({
+        $or: [
+          { total_shares: { $exists: false } },
+          { total_invested: { $exists: false } },
+          { average_buy_price: { $exists: false } },
+          { total_shares: null },
+          { total_invested: null },
+          { average_buy_price: null }
+        ]
+      });
+      
+      await this.bot.sendMessage(chatId, 
+        `🧹 Cleanup completed!\n` +
+        `Removed ${result.deletedCount} corrupted trade(s).\n` +
+        `Affected tickers: ${corruptedTrades.map(t => t.ticker).join(', ')}`
+      );
+      
+      console.log('Cleanup completed:', { deletedCount: result.deletedCount, affectedTickers: corruptedTrades.map(t => t.ticker) });
+    } catch (error) {
+      await this.bot.sendMessage(chatId, '⚠️ Error during cleanup. Please try again.');
+      console.error('Error in cleanup command:', error);
+    }
+  }
+
   async handleUnknownCommand(msg) {
     const chatId = msg.chat.id;
-    await this.bot.sendMessage(chatId, 'Unknown command. Available commands: /buy, /sell, /profit, /trades');
+    await this.bot.sendMessage(chatId, 'Unknown command. Available commands: /buy, /sell, /profit, /trades, /cleanup');
   }
 }
 
