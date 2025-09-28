@@ -399,23 +399,16 @@ app.get('/', (req, res) => {
 // Initialize bot and database on startup
 async function initializeApp() {
   try {
-    console.log('Starting app initialization...');
-    console.log('Environment variables check:');
-    console.log('- MONGODB_URI:', process.env.MONGODB_URI ? 'SET' : 'NOT SET');
-    console.log('- MONGODB_DB_NAME:', process.env.MONGODB_DB_NAME ? 'SET' : 'NOT SET');
-    console.log('- TELEGRAM_BOT_TOKEN:', process.env.TELEGRAM_BOT_TOKEN ? 'SET' : 'NOT SET');
-    
     // Connect to database first
     await database.connect();
     console.log('Database connected successfully');
     
-    // Initialize bot (this should work even without database)
+    // Initialize bot
     await telegramBot.init();
     console.log('Bot initialized successfully');
   } catch (error) {
     console.error('Failed to initialize app:', error);
-    console.error('Error details:', error.message);
-    console.error('Stack trace:', error.stack);
+    process.exit(1);
   }
 }
 
