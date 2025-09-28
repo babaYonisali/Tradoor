@@ -153,7 +153,7 @@ Note: Quantity is optional (defaults to 1)`;
     
     try {
       // Check if database is connected
-      if (!database.isConnected()) {
+      if (!database.getConnectionStatus()) {
         await this.bot.sendMessage(chatId, `⚠️ Database not connected. Trade not saved.\n\n✅ Would have bought ${quantity} shares of ${ticker} at $${price.toFixed(2)} each`);
         return;
       }
@@ -200,7 +200,7 @@ Note: Quantity is optional (defaults to 1)`;
     
     try {
       // Check if database is connected
-      if (!database.isConnected()) {
+      if (!database.getConnectionStatus()) {
         const quantityText = sellQuantity ? ` ${sellQuantity} shares of` : '';
         await this.bot.sendMessage(chatId, `⚠️ Database not connected. Cannot process sell command.\n\n✅ Would have sold${quantityText} ${ticker} at $${sellPrice.toFixed(2)}`);
         return;
@@ -306,7 +306,7 @@ Note: Quantity is optional (defaults to 1)`;
     const chatId = msg.chat.id;
     
     try {
-      if (!database.isConnected()) {
+      if (!database.getConnectionStatus()) {
         await this.bot.sendMessage(chatId, '⚠️ Database not connected. Cannot retrieve profit data.');
         return;
       }
@@ -347,7 +347,7 @@ Note: Quantity is optional (defaults to 1)`;
     const chatId = msg.chat.id;
     
     try {
-      if (!database.isConnected()) {
+      if (!database.getConnectionStatus()) {
         await this.bot.sendMessage(chatId, '⚠️ Database not connected. Cannot retrieve trades data.');
         return;
       }
