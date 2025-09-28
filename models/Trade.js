@@ -49,8 +49,7 @@ const tradeSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Index for better query performance
-tradeSchema.index({ ticker: 1 });
+// Index is automatically created by unique: true on ticker field
 
 // Virtual for current holdings value
 tradeSchema.virtual('current_value').get(function() {
