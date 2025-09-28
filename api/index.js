@@ -152,12 +152,6 @@ Note: Quantity is optional (defaults to 1)`;
     }
     
     try {
-      // Check if database is connected
-      if (!database.getConnectionStatus()) {
-        await this.bot.sendMessage(chatId, `⚠️ Database not connected. Trade not saved.\n\n✅ Would have bought ${quantity} shares of ${ticker} at $${price.toFixed(2)} each`);
-        return;
-      }
-
       const trade = new Trade({
         ticker: ticker,
         buy_price: price,
@@ -199,13 +193,6 @@ Note: Quantity is optional (defaults to 1)`;
     }
     
     try {
-      // Check if database is connected
-      if (!database.getConnectionStatus()) {
-        const quantityText = sellQuantity ? ` ${sellQuantity} shares of` : '';
-        await this.bot.sendMessage(chatId, `⚠️ Database not connected. Cannot process sell command.\n\n✅ Would have sold${quantityText} ${ticker} at $${sellPrice.toFixed(2)}`);
-        return;
-      }
-
       // Find open trades for this ticker (FIFO - First In, First Out)
       const openTrades = await Trade.getOpenTradesForTicker(ticker);
       
@@ -306,11 +293,6 @@ Note: Quantity is optional (defaults to 1)`;
     const chatId = msg.chat.id;
     
     try {
-      if (!database.getConnectionStatus()) {
-        await this.bot.sendMessage(chatId, '⚠️ Database not connected. Cannot retrieve profit data.');
-        return;
-      }
-
       const closedTrades = await Trade.getClosedTrades();
       
       if (closedTrades.length === 0) {
@@ -347,11 +329,6 @@ Note: Quantity is optional (defaults to 1)`;
     const chatId = msg.chat.id;
     
     try {
-      if (!database.getConnectionStatus()) {
-        await this.bot.sendMessage(chatId, '⚠️ Database not connected. Cannot retrieve trades data.');
-        return;
-      }
-
       const openTrades = await Trade.getOpenTrades();
       
       if (openTrades.length === 0) {
@@ -421,14 +398,9 @@ async function initializeApp() {
     console.log('- MONGODB_DB_NAME:', process.env.MONGODB_DB_NAME ? 'SET' : 'NOT SET');
     console.log('- TELEGRAM_BOT_TOKEN:', process.env.TELEGRAM_BOT_TOKEN ? 'SET' : 'NOT SET');
     
-    // Try to connect to database (but don't fail if it doesn't work)
-    try {
-      await database.connect();
-      console.log('Database connected successfully');
-    } catch (dbError) {
-      console.error('Database connection failed:', dbError.message);
-      console.log('Bot will still work, but trades won\'t be saved');
-    }
+    // Connect to database first
+    await database.connect();
+    console.log('Database connected successfully');
     
     // Initialize bot (this should work even without database)
     await telegramBot.init();
