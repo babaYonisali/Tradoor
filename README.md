@@ -85,12 +85,27 @@ The bot uses SQLite to store trade data locally. The database file (`trades.db`)
 ## Environment Variables
 
 - `TELEGRAM_BOT_TOKEN` - Your Telegram bot token (required)
+- `MONGODB_URI` - Your MongoDB connection string (required)
+- `MONGODB_DB_NAME` - Your MongoDB database name (required)
 - `VERCEL_URL` - Automatically set by Vercel
 - `NODE_ENV` - Set to 'production' on Vercel
+
+## Database Setup
+
+1. **Create a MongoDB Atlas account** (free tier available)
+2. **Create a new cluster** and get your connection string
+3. **Set environment variables in Vercel**:
+   ```bash
+   vercel env add MONGODB_URI
+   vercel env add MONGODB_DB_NAME
+   ```
+   - `MONGODB_URI`: Your MongoDB connection string (e.g., `mongodb+srv://username:password@cluster.mongodb.net/`)
+   - `MONGODB_DB_NAME`: Your database name (e.g., `trading-bot`)
 
 ## Notes
 
 - The bot uses FIFO (First In, First Out) for selling trades
 - All prices are stored as decimal numbers
-- The database persists between deployments on Vercel
+- Data persists permanently in MongoDB
 - Profit calculations include both dollar amount and percentage
+- MongoDB Atlas provides free 512MB storage

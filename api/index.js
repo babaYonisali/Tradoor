@@ -1,28 +1,11 @@
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const database = require('../config/database');
+const Trade = require('../models/Trade');
+require('dotenv').config();
 
 const app = express();
 app.use(express.json());
-
-// Initialize database
-const dbPath = path.join(__dirname, 'trades.db');
-const db = new sqlite3.Database(dbPath);
-
-// Create tables if they don't exist
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS trades (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ticker TEXT NOT NULL,
-    buy_price REAL NOT NULL,
-    sell_price REAL,
-    quantity REAL DEFAULT 1,
-    buy_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-    sell_date DATETIME,
-    status TEXT DEFAULT 'open'
-  )`);
-});
 
 // Telegram Bot Handler Class
 class TelegramBotHandler {
@@ -129,16 +112,19 @@ class TelegramBotHandler {
       return;
     }
     
-    const stmt = db.prepare('INSERT INTO trades (ticker, buy_price) VALUES (?, ?)');
-    stmt.run([ticker, price], async (err) => {
-      if (err) {
-        await this.bot.sendMessage(chatId, 'Error adding trade to database.');
-        console.error(err);
-      } else {
-        await this.bot.sendMessage(chatId, `✅ Bought ${ticker} at $${price.toFixed(2)}`);
-      }
-    });
-    stmt.finalize();
+    try {
+      const trade = new Trade({
+        ticker: ticker,
+        buy_price: price
+      });
+      
+      await trade.save();
+      await this.bot.sendMessage(chatId, `✅ Bought ${ticker} at $${price.toFixed(2)}`);
+      console.log('Trade added:', trade);
+    } catch (error) {
+      await this.bot.sendMessage(chatId, 'Error adding trade.');
+      console.error('Error adding trade:', error);
+    }
   }
 
   async handleSellCommand(msg) {
@@ -159,52 +145,48 @@ class TelegramBotHandler {
       return;
     }
     
-    // Find open trades for this ticker
-    db.get('SELECT * FROM trades WHERE ticker = ? AND status = "open" ORDER BY buy_date ASC LIMIT 1', [ticker], async (err, row) => {
-      if (err) {
-        await this.bot.sendMessage(chatId, 'Error accessing database.');
-        console.error(err);
-        return;
-      }
+    try {
+      // Find open trades for this ticker (FIFO - First In, First Out)
+      const openTrades = await Trade.getOpenTradesForTicker(ticker);
       
-      if (!row) {
+      if (openTrades.length === 0) {
         await this.bot.sendMessage(chatId, `No open trades found for ${ticker}.`);
         return;
       }
       
-      const profit = sellPrice - row.buy_price;
-      const profitPercent = ((profit / row.buy_price) * 100).toFixed(2);
+      // Get the oldest trade (FIFO)
+      const tradeToClose = openTrades[0];
       
-      // Update the trade as sold
-      const stmt = db.prepare('UPDATE trades SET sell_price = ?, sell_date = CURRENT_TIMESTAMP, status = "closed" WHERE id = ?');
-      stmt.run([sellPrice, row.id], async (err) => {
-        if (err) {
-          await this.bot.sendMessage(chatId, 'Error updating trade in database.');
-          console.error(err);
-        } else {
-          const profitEmoji = profit >= 0 ? '📈' : '📉';
-          await this.bot.sendMessage(chatId, 
-            `${profitEmoji} Sold ${ticker} at $${sellPrice.toFixed(2)}\n` +
-            `Bought at: $${row.buy_price.toFixed(2)}\n` +
-            `Profit: $${profit.toFixed(2)} (${profitPercent}%)`
-          );
-        }
-      });
-      stmt.finalize();
-    });
+      const profit = sellPrice - tradeToClose.buy_price;
+      const profitPercent = ((profit / tradeToClose.buy_price) * 100).toFixed(2);
+      
+      // Close the trade
+      tradeToClose.sell_price = sellPrice;
+      tradeToClose.sell_date = new Date();
+      tradeToClose.status = 'closed';
+      
+      await tradeToClose.save();
+      
+      const profitEmoji = profit >= 0 ? '📈' : '📉';
+      await this.bot.sendMessage(chatId, 
+        `${profitEmoji} Sold ${ticker} at $${sellPrice.toFixed(2)}\n` +
+        `Bought at: $${tradeToClose.buy_price.toFixed(2)}\n` +
+        `Profit: $${profit.toFixed(2)} (${profitPercent}%)`
+      );
+      console.log('Trade closed:', tradeToClose);
+    } catch (error) {
+      await this.bot.sendMessage(chatId, 'Error processing sell command.');
+      console.error('Error in sell command:', error);
+    }
   }
 
   async handleProfitCommand(msg) {
     const chatId = msg.chat.id;
     
-    db.all('SELECT ticker, buy_price, sell_price, (sell_price - buy_price) as profit FROM trades WHERE status = "closed" ORDER BY sell_date DESC', async (err, rows) => {
-      if (err) {
-        await this.bot.sendMessage(chatId, 'Error accessing database.');
-        console.error(err);
-        return;
-      }
+    try {
+      const closedTrades = await Trade.getClosedTrades();
       
-      if (rows.length === 0) {
+      if (closedTrades.length === 0) {
         await this.bot.sendMessage(chatId, 'No completed trades found.');
         return;
       }
@@ -212,13 +194,13 @@ class TelegramBotHandler {
       let message = '📊 **Trading Profit Summary**\n\n';
       let totalProfit = 0;
       
-      rows.forEach(row => {
-        const profit = row.profit;
-        const profitPercent = ((profit / row.buy_price) * 100).toFixed(2);
+      closedTrades.forEach(trade => {
+        const profit = trade.profit;
+        const profitPercent = trade.profit_percentage.toFixed(2);
         const emoji = profit >= 0 ? '✅' : '❌';
         
-        message += `${emoji} **${row.ticker}**\n`;
-        message += `Bought: $${row.buy_price.toFixed(2)} | Sold: $${row.sell_price.toFixed(2)}\n`;
+        message += `${emoji} **${trade.ticker}**\n`;
+        message += `Bought: $${trade.buy_price.toFixed(2)} | Sold: $${trade.sell_price.toFixed(2)}\n`;
         message += `Profit: $${profit.toFixed(2)} (${profitPercent}%)\n\n`;
         
         totalProfit += profit;
@@ -228,35 +210,37 @@ class TelegramBotHandler {
       message += `${totalEmoji} **Total Profit: $${totalProfit.toFixed(2)}**`;
       
       await this.bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-    });
+    } catch (error) {
+      await this.bot.sendMessage(chatId, 'Error retrieving profit data.');
+      console.error('Error in profit command:', error);
+    }
   }
 
   async handleTradesCommand(msg) {
     const chatId = msg.chat.id;
     
-    db.all('SELECT ticker, buy_price, buy_date FROM trades WHERE status = "open" ORDER BY buy_date DESC', async (err, rows) => {
-      if (err) {
-        await this.bot.sendMessage(chatId, 'Error accessing database.');
-        console.error(err);
-        return;
-      }
+    try {
+      const openTrades = await Trade.getOpenTrades();
       
-      if (rows.length === 0) {
+      if (openTrades.length === 0) {
         await this.bot.sendMessage(chatId, 'No open trades found.');
         return;
       }
       
       let message = '📋 **Open Trades**\n\n';
       
-      rows.forEach(row => {
-        const buyDate = new Date(row.buy_date).toLocaleDateString();
-        message += `🔹 **${row.ticker}**\n`;
-        message += `Buy Price: $${row.buy_price.toFixed(2)}\n`;
+      openTrades.forEach(trade => {
+        const buyDate = new Date(trade.buy_date).toLocaleDateString();
+        message += `🔹 **${trade.ticker}**\n`;
+        message += `Buy Price: $${trade.buy_price.toFixed(2)}\n`;
         message += `Date: ${buyDate}\n\n`;
       });
       
       await this.bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-    });
+    } catch (error) {
+      await this.bot.sendMessage(chatId, 'Error retrieving trades data.');
+      console.error('Error in trades command:', error);
+    }
   }
 
   async handleUnknownCommand(msg) {
@@ -294,18 +278,23 @@ app.get('/', (req, res) => {
   });
 });
 
-// Initialize bot on startup
-async function initializeBot() {
+// Initialize bot and database on startup
+async function initializeApp() {
   try {
+    // Connect to database first
+    await database.connect();
+    console.log('Database connected successfully');
+    
+    // Initialize bot
     await telegramBot.init();
     console.log('Bot initialized successfully');
   } catch (error) {
-    console.error('Failed to initialize bot:', error);
+    console.error('Failed to initialize app:', error);
   }
 }
 
-// Initialize bot
-initializeBot();
+// Initialize app
+initializeApp();
 
 // Export for Vercel
 module.exports = app;
