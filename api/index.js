@@ -155,6 +155,15 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
       // Calculate shares based on dollar amount spent
       const newShares = quantity / price;
       
+      // Debug logging
+      console.log('Buy command values:', { ticker, price, quantity, newShares });
+      
+      // Validate calculated shares
+      if (isNaN(newShares) || newShares <= 0) {
+        await this.bot.sendMessage(chatId, 'Invalid calculation: Unable to calculate shares from the provided values.');
+        return;
+      }
+      
       // Check if trade exists first
       let trade = await Trade.findOne({ ticker: ticker.toUpperCase() });
       
@@ -172,10 +181,46 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
           last_sell_date: null
         });
       } else {
+        // Debug logging for existing trade
+        console.log('Existing trade data:', { 
+          ticker: trade.ticker, 
+          total_shares: trade.total_shares, 
+          total_invested: trade.total_invested,
+          average_buy_price: trade.average_buy_price
+        });
+        
+        // Validate existing trade data
+        if (isNaN(trade.total_shares) || isNaN(trade.total_invested) || 
+            trade.total_shares < 0 || trade.total_invested < 0) {
+          throw new Error('Invalid existing trade data: corrupted values detected');
+        }
+        
         // Update existing trade - calculate new average price
         const totalNewShares = trade.total_shares + newShares;
         const totalNewInvested = trade.total_invested + quantity;
+        
+        // Debug logging for calculations
+        console.log('Calculation values:', { 
+          totalNewShares, 
+          totalNewInvested, 
+          newShares, 
+          quantity 
+        });
+        
+        // Ensure we don't have division by zero or invalid values
+        if (totalNewShares <= 0 || isNaN(totalNewShares) || isNaN(totalNewInvested)) {
+          throw new Error('Invalid calculation: total shares or invested amount is invalid');
+        }
+        
         const newAveragePrice = totalNewInvested / totalNewShares;
+        
+        // Debug logging for final calculation
+        console.log('Final calculation:', { newAveragePrice });
+        
+        // Validate the calculated values before saving
+        if (isNaN(newAveragePrice) || newAveragePrice <= 0) {
+          throw new Error('Invalid calculation: average price is invalid');
+        }
         
         trade.average_buy_price = newAveragePrice;
         trade.total_shares = totalNewShares;
