@@ -155,18 +155,24 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
       // Calculate shares based on dollar amount spent
       const newShares = quantity / price;
       
-      // Get or create trade for this ticker
-      let trade = await Trade.getOrCreateTrade(ticker);
+      // Check if trade exists first
+      let trade = await Trade.findOne({ ticker: ticker.toUpperCase() });
       
-      if (trade.total_shares === 0) {
-        // First purchase
-        trade.average_buy_price = price;
-        trade.total_shares = newShares;
-        trade.total_invested = quantity;
-        trade.first_buy_date = new Date();
-        trade.last_buy_date = new Date();
+      if (!trade) {
+        // Create new trade
+        trade = new Trade({
+          ticker: ticker.toUpperCase(),
+          average_buy_price: price,
+          total_shares: newShares,
+          total_invested: quantity,
+          total_sold_value: 0,
+          total_shares_sold: 0,
+          first_buy_date: new Date(),
+          last_buy_date: new Date(),
+          last_sell_date: null
+        });
       } else {
-        // Additional purchase - calculate new average price
+        // Update existing trade - calculate new average price
         const totalNewShares = trade.total_shares + newShares;
         const totalNewInvested = trade.total_invested + quantity;
         const newAveragePrice = totalNewInvested / totalNewShares;
@@ -225,21 +231,24 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
         return;
       }
       
+      // Calculate remaining shares manually
+      const remainingShares = trade.total_shares - trade.total_shares_sold;
+      
       // Calculate how many shares to sell
       let sharesToSell;
       if (!sellDollarAmount) {
         // Sell all remaining shares
-        sharesToSell = trade.remaining_shares;
+        sharesToSell = remainingShares;
       } else {
         // Sell specific dollar amount
         sharesToSell = sellDollarAmount / sellPrice;
       }
       
       // Check if we have enough shares
-      if (sharesToSell > trade.remaining_shares) {
-        const maxDollarAmount = (trade.remaining_shares * sellPrice).toFixed(2);
+      if (sharesToSell > remainingShares) {
+        const maxDollarAmount = (remainingShares * sellPrice).toFixed(2);
         await this.bot.sendMessage(chatId, 
-          `⚠️ You only have ${trade.remaining_shares.toFixed(6)} shares of ${ticker}.\n` +
+          `⚠️ You only have ${remainingShares.toFixed(6)} shares of ${ticker}.\n` +
           `Maximum you can sell: $${maxDollarAmount}`
         );
         return;
@@ -258,14 +267,15 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
       await trade.save();
       
       const profitEmoji = totalProfit >= 0 ? '📈' : '📉';
-      const remainingShares = trade.remaining_shares.toFixed(6);
+      const newRemainingShares = remainingShares - sharesToSell;
+      const totalProfitOnTicker = trade.total_sold_value - (trade.total_shares_sold * trade.average_buy_price);
       
       await this.bot.sendMessage(chatId, 
         `${profitEmoji} Sold ${sharesToSell.toFixed(6)} shares of ${ticker} at $${sellPrice.toFixed(2)} per share\n` +
         `Average buy price: $${trade.average_buy_price.toFixed(2)} per share\n` +
         `Profit on this sale: $${totalProfit.toFixed(2)} (${profitPercent}%)\n` +
-        `Remaining shares: ${remainingShares}\n` +
-        `Total profit on ${ticker}: $${trade.total_profit.toFixed(2)}`
+        `Remaining shares: ${newRemainingShares.toFixed(6)}\n` +
+        `Total profit on ${ticker}: $${totalProfitOnTicker.toFixed(2)}`
       );
       
       console.log('Trade updated:', trade);
@@ -327,8 +337,11 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
     try {
       const allTrades = await Trade.getAllTrades();
       
-      // Filter trades that have remaining shares
-      const activeTrades = allTrades.filter(trade => trade.remaining_shares > 0);
+      // Filter trades that have remaining shares (calculate manually)
+      const activeTrades = allTrades.filter(trade => {
+        const remainingShares = trade.total_shares - trade.total_shares_sold;
+        return remainingShares > 0;
+      });
       
       if (activeTrades.length === 0) {
         await this.bot.sendMessage(chatId, 'No active holdings found.');
@@ -338,13 +351,13 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
       let message = '📋 **Current Holdings**\n\n';
       
       activeTrades.forEach(trade => {
-        const remainingShares = trade.remaining_shares.toFixed(6);
-        const currentValue = (trade.remaining_shares * trade.average_buy_price).toFixed(2);
+        const remainingShares = trade.total_shares - trade.total_shares_sold;
+        const currentValue = (remainingShares * trade.average_buy_price).toFixed(2);
         const firstBuyDate = new Date(trade.first_buy_date).toLocaleDateString();
         const lastBuyDate = new Date(trade.last_buy_date).toLocaleDateString();
         
         message += `🔹 **${trade.ticker}**\n`;
-        message += `Shares: ${remainingShares} @ $${trade.average_buy_price.toFixed(2)} avg\n`;
+        message += `Shares: ${remainingShares.toFixed(6)} @ $${trade.average_buy_price.toFixed(2)} avg\n`;
         message += `Invested: $${trade.total_invested.toFixed(2)}\n`;
         message += `Current Value: $${currentValue}\n`;
         message += `First bought: ${firstBuyDate}\n`;
