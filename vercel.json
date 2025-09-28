@@ -17,6 +17,6 @@
     }
   ],
   "env": {
-    "TELEGRAM_BOT_TOKEN": "@telegram_bot_token"
+    "Node_ENV": "production"
   }
 }
