@@ -153,17 +153,39 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
     
     try {
       // Calculate shares based on dollar amount spent
-      const shares = quantity / price;
+      const newShares = quantity / price;
       
-      const trade = new Trade({
-        ticker: ticker,
-        buy_price: price,
-        quantity: shares
-      });
+      // Get or create trade for this ticker
+      let trade = await Trade.getOrCreateTrade(ticker);
+      
+      if (trade.total_shares === 0) {
+        // First purchase
+        trade.average_buy_price = price;
+        trade.total_shares = newShares;
+        trade.total_invested = quantity;
+        trade.first_buy_date = new Date();
+        trade.last_buy_date = new Date();
+      } else {
+        // Additional purchase - calculate new average price
+        const totalNewShares = trade.total_shares + newShares;
+        const totalNewInvested = trade.total_invested + quantity;
+        const newAveragePrice = totalNewInvested / totalNewShares;
+        
+        trade.average_buy_price = newAveragePrice;
+        trade.total_shares = totalNewShares;
+        trade.total_invested = totalNewInvested;
+        trade.last_buy_date = new Date();
+      }
       
       await trade.save();
-      await this.bot.sendMessage(chatId, `✅ Bought $${quantity.toFixed(2)} worth of ${ticker} at $${price.toFixed(2)} per share\nShares: ${shares.toFixed(6)}`);
-      console.log('Trade added:', trade);
+      
+      await this.bot.sendMessage(chatId, 
+        `✅ Bought $${quantity.toFixed(2)} worth of ${ticker} at $${price.toFixed(2)} per share\n` +
+        `This purchase: ${newShares.toFixed(6)} shares\n` +
+        `Total ${ticker} holdings: ${trade.total_shares.toFixed(6)} shares ($${trade.total_invested.toFixed(2)} invested)\n` +
+        `Average price: $${trade.average_buy_price.toFixed(2)} per share`
+      );
+      console.log('Trade updated:', trade);
     } catch (error) {
       await this.bot.sendMessage(chatId, `⚠️ Database error. Trade not saved.\n\n✅ Would have bought $${quantity.toFixed(2)} worth of ${ticker} at $${price.toFixed(2)} per share`);
       console.error('Error adding trade:', error);
@@ -195,99 +217,58 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
     }
     
     try {
-      // Find open trades for this ticker (FIFO - First In, First Out)
-      const openTrades = await Trade.getOpenTradesForTicker(ticker);
+      // Get trade for this ticker
+      const trade = await Trade.findOne({ ticker: ticker.toUpperCase() });
       
-      if (openTrades.length === 0) {
-        await this.bot.sendMessage(chatId, `No open trades found for ${ticker}.`);
+      if (!trade || trade.total_shares === 0) {
+        await this.bot.sendMessage(chatId, `No holdings found for ${ticker}.`);
         return;
       }
       
-      // If no dollar amount specified, sell all shares of the oldest trade
+      // Calculate how many shares to sell
+      let sharesToSell;
       if (!sellDollarAmount) {
-        const tradeToClose = openTrades[0];
-        const profit = (sellPrice - tradeToClose.buy_price) * tradeToClose.quantity;
-        const profitPerShare = sellPrice - tradeToClose.buy_price;
-        const profitPercent = ((profitPerShare / tradeToClose.buy_price) * 100).toFixed(2);
-        
-        // Close the trade
-        tradeToClose.sell_price = sellPrice;
-        tradeToClose.sell_date = new Date();
-        tradeToClose.status = 'closed';
-        
-        await tradeToClose.save();
-        
-        const profitEmoji = profit >= 0 ? '📈' : '📉';
-        const totalRevenue = (sellPrice * tradeToClose.quantity).toFixed(2);
-        const sharesSold = tradeToClose.quantity.toFixed(6);
-        await this.bot.sendMessage(chatId, 
-          `${profitEmoji} Sold ${sharesSold} shares of ${ticker} at $${sellPrice.toFixed(2)} each\n` +
-          `Bought at: $${tradeToClose.buy_price.toFixed(2)} each\n` +
-          `Total Revenue: $${totalRevenue}\n` +
-          `Total Profit: $${profit.toFixed(2)} (${profitPercent}%)`
-        );
-        console.log('Trade closed:', tradeToClose);
+        // Sell all remaining shares
+        sharesToSell = trade.remaining_shares;
       } else {
-        // Sell specific dollar amount (FIFO)
-        const sharesToSell = sellDollarAmount / sellPrice;
-        let remainingToSell = sharesToSell;
-        let totalProfit = 0;
-        let totalRevenue = sellDollarAmount;
-        let tradesClosed = 0;
-        
-        for (const trade of openTrades) {
-          if (remainingToSell <= 0) break;
-          
-          const sharesFromThisTrade = Math.min(remainingToSell, trade.quantity);
-          const profitPerShare = sellPrice - trade.buy_price;
-          const tradeProfit = profitPerShare * sharesFromThisTrade;
-          
-          totalProfit += tradeProfit;
-          
-          if (sharesFromThisTrade === trade.quantity) {
-            // Close entire trade
-            trade.sell_price = sellPrice;
-            trade.sell_date = new Date();
-            trade.status = 'closed';
-            await trade.save();
-            tradesClosed++;
-          } else {
-            // Partial sell - create new trade for remaining shares
-            const remainingShares = trade.quantity - sharesFromThisTrade;
-            const newTrade = new Trade({
-              ticker: trade.ticker,
-              buy_price: trade.buy_price,
-              quantity: remainingShares,
-              buy_date: trade.buy_date
-            });
-            await newTrade.save();
-            
-            // Close original trade
-            trade.sell_price = sellPrice;
-            trade.sell_date = new Date();
-            trade.status = 'closed';
-            trade.quantity = sharesFromThisTrade;
-            await trade.save();
-            tradesClosed++;
-          }
-          
-          remainingToSell -= sharesFromThisTrade;
-        }
-        
-        if (remainingToSell > 0) {
-          const actualSharesSold = (sharesToSell - remainingToSell).toFixed(6);
-          const actualDollarAmount = ((sharesToSell - remainingToSell) * sellPrice).toFixed(2);
-          await this.bot.sendMessage(chatId, `⚠️ Only sold ${actualSharesSold} shares ($${actualDollarAmount}). You don't have enough shares for $${sellDollarAmount.toFixed(2)}.`);
-        }
-        
-        const profitEmoji = totalProfit >= 0 ? '📈' : '📉';
-        const actualSharesSold = (sharesToSell - remainingToSell).toFixed(6);
-        await this.bot.sendMessage(chatId, 
-          `${profitEmoji} Sold $${sellDollarAmount.toFixed(2)} worth of ${ticker} at $${sellPrice.toFixed(2)} per share\n` +
-          `Shares sold: ${actualSharesSold}\n` +
-          `Total Profit: $${totalProfit.toFixed(2)}`
-        );
+        // Sell specific dollar amount
+        sharesToSell = sellDollarAmount / sellPrice;
       }
+      
+      // Check if we have enough shares
+      if (sharesToSell > trade.remaining_shares) {
+        const maxDollarAmount = (trade.remaining_shares * sellPrice).toFixed(2);
+        await this.bot.sendMessage(chatId, 
+          `⚠️ You only have ${trade.remaining_shares.toFixed(6)} shares of ${ticker}.\n` +
+          `Maximum you can sell: $${maxDollarAmount}`
+        );
+        return;
+      }
+      
+      // Update trade with sell information
+      const sellValue = sharesToSell * sellPrice;
+      const profitPerShare = sellPrice - trade.average_buy_price;
+      const totalProfit = profitPerShare * sharesToSell;
+      const profitPercent = ((profitPerShare / trade.average_buy_price) * 100).toFixed(2);
+      
+      trade.total_shares_sold += sharesToSell;
+      trade.total_sold_value += sellValue;
+      trade.last_sell_date = new Date();
+      
+      await trade.save();
+      
+      const profitEmoji = totalProfit >= 0 ? '📈' : '📉';
+      const remainingShares = trade.remaining_shares.toFixed(6);
+      
+      await this.bot.sendMessage(chatId, 
+        `${profitEmoji} Sold ${sharesToSell.toFixed(6)} shares of ${ticker} at $${sellPrice.toFixed(2)} per share\n` +
+        `Average buy price: $${trade.average_buy_price.toFixed(2)} per share\n` +
+        `Profit on this sale: $${totalProfit.toFixed(2)} (${profitPercent}%)\n` +
+        `Remaining shares: ${remainingShares}\n` +
+        `Total profit on ${ticker}: $${trade.total_profit.toFixed(2)}`
+      );
+      
+      console.log('Trade updated:', trade);
     } catch (error) {
       const dollarText = sellDollarAmount ? ` $${sellDollarAmount.toFixed(2)} worth of` : '';
       await this.bot.sendMessage(chatId, `⚠️ Database error. Cannot process sell command.\n\n✅ Would have sold${dollarText} ${ticker} at $${sellPrice.toFixed(2)}`);
@@ -299,34 +280,39 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
     const chatId = msg.chat.id;
     
     try {
-      const closedTrades = await Trade.getClosedTrades();
+      const allTrades = await Trade.getAllTrades();
       
-      if (closedTrades.length === 0) {
-        await this.bot.sendMessage(chatId, 'No completed trades found.');
+      if (allTrades.length === 0) {
+        await this.bot.sendMessage(chatId, 'No trades found.');
         return;
       }
       
-      let message = '📊 **Trading Profit Summary**\n\n';
+      let message = '📊 **Trading Summary**\n\n';
       let totalProfit = 0;
+      let totalInvested = 0;
+      let totalSoldValue = 0;
       
-      closedTrades.forEach(trade => {
-        const profit = trade.profit;
-        const profitPercent = trade.profit_percentage.toFixed(2);
+      allTrades.forEach(trade => {
+        const profit = trade.total_profit;
         const emoji = profit >= 0 ? '✅' : '❌';
-        const shares = trade.quantity.toFixed(6);
-        const totalInvested = (trade.buy_price * trade.quantity).toFixed(2);
-        const totalRevenue = (trade.sell_price * trade.quantity).toFixed(2);
+        const remainingShares = trade.remaining_shares.toFixed(6);
         
         message += `${emoji} **${trade.ticker}**\n`;
-        message += `$${totalInvested} invested → $${totalRevenue} revenue\n`;
-        message += `${shares} shares @ $${trade.buy_price.toFixed(2)} → $${trade.sell_price.toFixed(2)}\n`;
-        message += `Profit: $${profit.toFixed(2)} (${profitPercent}%)\n\n`;
+        message += `Invested: $${trade.total_invested.toFixed(2)}\n`;
+        message += `Sold: $${trade.total_sold_value.toFixed(2)} (${trade.total_shares_sold.toFixed(6)} shares)\n`;
+        message += `Remaining: ${remainingShares} shares @ $${trade.average_buy_price.toFixed(2)} avg\n`;
+        message += `Profit: $${profit.toFixed(2)}\n\n`;
         
         totalProfit += profit;
+        totalInvested += trade.total_invested;
+        totalSoldValue += trade.total_sold_value;
       });
       
       const totalEmoji = totalProfit >= 0 ? '🎉' : '😞';
-      message += `${totalEmoji} **Total Profit: $${totalProfit.toFixed(2)}**`;
+      message += `${totalEmoji} **Total Summary**\n`;
+      message += `Total Invested: $${totalInvested.toFixed(2)}\n`;
+      message += `Total Sold: $${totalSoldValue.toFixed(2)}\n`;
+      message += `Total Profit: $${totalProfit.toFixed(2)}`;
       
       await this.bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     } catch (error) {
@@ -339,23 +325,33 @@ Note: Dollar amount is optional (defaults to 1 share worth)`;
     const chatId = msg.chat.id;
     
     try {
-      const openTrades = await Trade.getOpenTrades();
+      const allTrades = await Trade.getAllTrades();
       
-      if (openTrades.length === 0) {
-        await this.bot.sendMessage(chatId, 'No open trades found.');
+      // Filter trades that have remaining shares
+      const activeTrades = allTrades.filter(trade => trade.remaining_shares > 0);
+      
+      if (activeTrades.length === 0) {
+        await this.bot.sendMessage(chatId, 'No active holdings found.');
         return;
       }
       
-      let message = '📋 **Open Trades**\n\n';
+      let message = '📋 **Current Holdings**\n\n';
       
-      openTrades.forEach(trade => {
-        const buyDate = new Date(trade.buy_date).toLocaleDateString();
-        const totalCost = (trade.buy_price * trade.quantity).toFixed(2);
-        const shares = trade.quantity.toFixed(6);
+      activeTrades.forEach(trade => {
+        const remainingShares = trade.remaining_shares.toFixed(6);
+        const currentValue = (trade.remaining_shares * trade.average_buy_price).toFixed(2);
+        const firstBuyDate = new Date(trade.first_buy_date).toLocaleDateString();
+        const lastBuyDate = new Date(trade.last_buy_date).toLocaleDateString();
+        
         message += `🔹 **${trade.ticker}**\n`;
-        message += `$${totalCost} invested @ $${trade.buy_price.toFixed(2)} per share\n`;
-        message += `Shares: ${shares}\n`;
-        message += `Date: ${buyDate}\n\n`;
+        message += `Shares: ${remainingShares} @ $${trade.average_buy_price.toFixed(2)} avg\n`;
+        message += `Invested: $${trade.total_invested.toFixed(2)}\n`;
+        message += `Current Value: $${currentValue}\n`;
+        message += `First bought: ${firstBuyDate}\n`;
+        if (trade.last_buy_date !== trade.first_buy_date) {
+          message += `Last bought: ${lastBuyDate}\n`;
+        }
+        message += '\n';
       });
       
       await this.bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });

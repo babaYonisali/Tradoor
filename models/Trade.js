@@ -5,92 +5,80 @@ const tradeSchema = new mongoose.Schema({
         type: String,
         required: true,
         uppercase: true,
-        trim: true
+        trim: true,
+        unique: true
     },
-    buy_price: {
+    average_buy_price: {
         type: Number,
         required: true,
         min: 0
     },
-    sell_price: {
+    total_shares: {
         type: Number,
-        default: null,
+        required: true,
         min: 0
     },
-    quantity: {
+    total_invested: {
         type: Number,
-        default: 1,
+        required: true,
         min: 0
     },
-    buy_date: {
+    total_sold_value: {
+        type: Number,
+        default: 0,
+        min: 0
+    },
+    total_shares_sold: {
+        type: Number,
+        default: 0,
+        min: 0
+    },
+    first_buy_date: {
         type: Date,
         default: Date.now
     },
-    sell_date: {
+    last_buy_date: {
+        type: Date,
+        default: Date.now
+    },
+    last_sell_date: {
         type: Date,
         default: null
-    },
-    status: {
-        type: String,
-        enum: ['open', 'closed'],
-        default: 'open'
     }
 }, {
     timestamps: true
 });
 
 // Index for better query performance
-tradeSchema.index({ ticker: 1, status: 1 });
-tradeSchema.index({ buy_date: -1 });
-tradeSchema.index({ sell_date: -1 });
+tradeSchema.index({ ticker: 1 });
 
-// Virtual for profit calculation
-tradeSchema.virtual('profit').get(function() {
-    if (this.sell_price && this.buy_price) {
-        return this.sell_price - this.buy_price;
-    }
-    return null;
+// Virtual for current holdings value
+tradeSchema.virtual('current_value').get(function() {
+    return this.total_shares * this.average_buy_price;
 });
 
-// Virtual for profit percentage
-tradeSchema.virtual('profit_percentage').get(function() {
-    if (this.sell_price && this.buy_price) {
-        return ((this.sell_price - this.buy_price) / this.buy_price) * 100;
-    }
-    return null;
+// Virtual for total profit/loss
+tradeSchema.virtual('total_profit').get(function() {
+    return this.total_sold_value - (this.total_shares_sold * this.average_buy_price);
 });
 
-// Static method to get open trades for a ticker (FIFO)
-tradeSchema.statics.getOpenTradesForTicker = function(ticker) {
-    return this.find({ 
-        ticker: ticker.toUpperCase(), 
-        status: 'open' 
-    }).sort({ buy_date: 1 }); // Oldest first for FIFO
+// Virtual for remaining shares
+tradeSchema.virtual('remaining_shares').get(function() {
+    return this.total_shares - this.total_shares_sold;
+});
+
+// Static method to get or create trade for ticker
+tradeSchema.statics.getOrCreateTrade = function(ticker) {
+    return this.findOneAndUpdate(
+        { ticker: ticker.toUpperCase() },
+        {},
+        { upsert: true, new: true }
+    );
 };
 
-// Static method to get all open trades
-tradeSchema.statics.getOpenTrades = function() {
-    return this.find({ status: 'open' }).sort({ buy_date: -1 }); // Newest first
-};
-
-// Static method to get all closed trades
-tradeSchema.statics.getClosedTrades = function() {
-    return this.find({ status: 'closed' }).sort({ sell_date: -1 }); // Newest first
-};
-
-// Static method to get total profit
-tradeSchema.statics.getTotalProfit = function() {
-    return this.aggregate([
-        { $match: { status: 'closed' } },
-        {
-            $group: {
-                _id: null,
-                totalProfit: {
-                    $sum: { $subtract: ['$sell_price', '$buy_price'] }
-                }
-            }
-        }
-    ]);
+// Static method to get all trades
+tradeSchema.statics.getAllTrades = function() {
+    return this.find({}).sort({ ticker: 1 });
 };
 
 module.exports = mongoose.model('Trade', tradeSchema);
