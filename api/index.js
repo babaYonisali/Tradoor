@@ -41,6 +41,12 @@ class TelegramBotHandler {
       console.log('=== WEBHOOK UPDATE RECEIVED ===');
       console.log('Update:', JSON.stringify(update, null, 2));
       
+      // Ensure bot is initialized
+      if (!this.bot) {
+        console.log('Bot not initialized, attempting to initialize...');
+        await this.init();
+      }
+      
       if (update.message && update.message.text) {
         const msg = update.message;
         console.log('Processing message:', msg.text);
@@ -64,6 +70,9 @@ class TelegramBotHandler {
     const command = text.split(' ')[0];
     
     switch (command) {
+      case '/start':
+        await this.handleStartCommand(msg);
+        break;
       case '/buy':
         await this.handleBuyCommand(msg);
         break;
@@ -94,6 +103,26 @@ class TelegramBotHandler {
   }
 
   // Command handlers
+  async handleStartCommand(msg) {
+    const chatId = msg.chat.id;
+    const welcomeMessage = `🤖 Welcome to the Trading Bot!
+
+Available commands:
+• /buy {ticker} {price} - Record a buy trade
+• /sell {ticker} {price} - Record a sell trade
+• /profit - View profit summary
+• /trades - View open trades
+
+Example:
+/buy AAPL 150.50
+/sell AAPL 155.75`;
+
+    try {
+      await this.bot.sendMessage(chatId, welcomeMessage);
+    } catch (error) {
+      console.error('Error sending start message:', error);
+    }
+  }
   async handleBuyCommand(msg) {
     const chatId = msg.chat.id;
     const text = msg.text;
@@ -281,15 +310,28 @@ app.get('/', (req, res) => {
 // Initialize bot and database on startup
 async function initializeApp() {
   try {
-    // Connect to database first
-    await database.connect();
-    console.log('Database connected successfully');
+    console.log('Starting app initialization...');
+    console.log('Environment variables check:');
+    console.log('- MONGODB_URI:', process.env.MONGODB_URI ? 'SET' : 'NOT SET');
+    console.log('- MONGODB_DB_NAME:', process.env.MONGODB_DB_NAME ? 'SET' : 'NOT SET');
+    console.log('- TELEGRAM_BOT_TOKEN:', process.env.TELEGRAM_BOT_TOKEN ? 'SET' : 'NOT SET');
     
-    // Initialize bot
+    // Try to connect to database (but don't fail if it doesn't work)
+    try {
+      await database.connect();
+      console.log('Database connected successfully');
+    } catch (dbError) {
+      console.error('Database connection failed:', dbError.message);
+      console.log('Bot will still work, but trades won\'t be saved');
+    }
+    
+    // Initialize bot (this should work even without database)
     await telegramBot.init();
     console.log('Bot initialized successfully');
   } catch (error) {
     console.error('Failed to initialize app:', error);
+    console.error('Error details:', error.message);
+    console.error('Stack trace:', error.stack);
   }
 }
 
